@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 from abc import abstractmethod
+from ftplib import error_temp
 from typing import TYPE_CHECKING, Any
 
 from pantherdb import PantherDB
@@ -16,6 +17,12 @@ except ImportError:
     #   If user really wants to use redis,
     #   we are going to force him to install it in `panther._load_configs.load_redis`
     _Redis = type('_Redis', (), {'__new__': lambda x: x})
+
+try:
+    from valkey.asyncio import Valkey as _Valkey
+    from valkey import exceptions as valkey_exceptions
+except ImportError:
+    _Valkey = type('_Valkey', (), {'__new__': lambda x: x})
 
 if TYPE_CHECKING:
     from pymongo.database import Database
@@ -141,5 +148,56 @@ class RedisConnection(Singleton, _Redis):
         return self.websocket_connection
 
 
+class ValkeyConnection(Singleton, _Valkey):
+    def __init__(
+            self,
+            init: bool = False,
+            host: str = 'localhost',
+            port: int = 6379,
+            db: int = 0,
+            websocket_db: int = 0,
+            **kwargs
+    ):
+        if init:
+            self.host = host
+            self.port = port
+            self.db = db
+            self.websocket_db = websocket_db
+            self.kwargs = kwargs
+
+            super().__init__(host=host, port=port, db=db, **kwargs)
+            self.sync_ping()
+
+    @property
+    def is_connected(self):
+        try:
+            self.sync_ping()
+        except valkey_exceptions.ConnectionError:
+            return False
+        else:
+            return True
+
+    def sync_ping(self):
+        from valkey import Valkey
+
+        Valkey(host=self.host, port=self.port, socket_timeout=3, **self.kwargs).ping()
+
+    async def execute_command(self, *args, **options):
+        if self.is_connected:
+            return await super().execute_command(*args, **options)
+        msg = '`VALKEY` is not found in `configs`'
+        raise ValueError(msg)
+
+    def create_connection_for_websocket(self) -> _Redis:
+        if not hasattr(self, 'websocket_connection'):
+            self.websocket_connection = _Redis(
+                host=self.host,
+                port=self.port,
+                db=self.websocket_db,
+                **self.kwargs
+            )
+        return self.websocket_connection
+
 db: DatabaseConnection = DatabaseConnection()
 redis: RedisConnection = RedisConnection()
+valkey: ValkeyConnection = ValkeyConnection()
